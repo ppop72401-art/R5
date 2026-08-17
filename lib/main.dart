@@ -38,7 +38,7 @@ class _ServerDashboardState extends State<ServerDashboard> {
 
   Future<void> _bootServer() async {
     try {
-      // تجهيز مجلد لحفظ الملفات
+      // تجهيز مجلد لحفظ الملفات بشكل آمن
       _uploadDir = await Directory.systemTemp.createTemp('fastdrop_vault_');
       
       // جلب عنوان الـ IP للشبكة المحلية (Wi-Fi)
@@ -76,10 +76,10 @@ class _ServerDashboardState extends State<ServerDashboard> {
   Future<void> _handleRequest(HttpRequest request) async {
     final response = request.response;
     
-    // حل مشاكل الـ CORS لضمان اتصال الأجهزة الأخرى
+    // حلول متقدمة للـ CORS والسماح بنقل البيانات
     response.headers.add('Access-Control-Allow-Origin', '*');
     response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    response.headers.add('Access-Control-Allow-Headers', 'Origin, Content-Type, X-File-Name');
+    response.headers.add('Access-Control-Allow-Headers', 'Origin, Content-Type');
 
     if (request.method == 'OPTIONS') {
       response.statusCode = HttpStatus.ok;
@@ -95,17 +95,14 @@ class _ServerDashboardState extends State<ServerDashboard> {
         response.write(htmlContent);
       } 
       else if (request.uri.path == '/api/upload' && request.method == 'POST') {
-        // استقبال تيار الملف السريع
-        String fileName = request.headers.value('X-File-Name') ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
-        fileName = Uri.decodeComponent(fileName);
+        // قراءة اسم الملف وصيغته من الرابط مباشرة لضمان عدم ضياع الصيغة
+        String fileName = request.uri.queryParameters['name'] ?? 'unknown_file_${DateTime.now().millisecondsSinceEpoch}';
         
         File newFile = File('${_uploadDir.path}/$fileName');
-        var sink = newFile.openWrite();
+        var sink = newFile.openWrite(mode: FileMode.write);
         
-        // ----------------------------------------------------
-        // الإصلاح هنا: استخدام addStream بدلاً من pipe
-        // ----------------------------------------------------
-        await sink.addStream(request);
+        // حفظ الملف كتيار بايتات نقي (Raw Binary Data) للحفاظ على جودته وصيغته الأصلية
+        await sink.addStream(request.cast<List<int>>());
         await sink.close();
         
         _updateFilesList();
@@ -120,15 +117,18 @@ class _ServerDashboardState extends State<ServerDashboard> {
         response.write(jsonEncode(_uploadedFiles));
       } 
       else if (request.uri.path.startsWith('/api/download/')) {
-        // تحميل الملف المطلوب
+        // تحميل الملف بالصيغة الثنائية (Binary) ليقرأه النظام كملف حقيقي
         String fileName = Uri.decodeComponent(request.uri.pathSegments.last);
         File file = File('${_uploadDir.path}/$fileName');
         
         if (await file.exists()) {
-          response.headers.contentType = ContentType.binary;
-          response.headers.add('Content-Disposition', 'attachment; filename="$fileName"');
+          response.headers.contentType = ContentType('application', 'octet-stream');
+          // ترميز اسم الملف ليدعم اللغة العربية والمسافات
+          response.headers.add('Content-Disposition', 'attachment; filename="${Uri.encodeComponent(fileName)}"');
           response.contentLength = await file.length();
-          await file.openRead().pipe(response);
+          
+          await response.addStream(file.openRead().cast<List<int>>());
+          await response.close();
           return; 
         } else {
           response.statusCode = HttpStatus.notFound;

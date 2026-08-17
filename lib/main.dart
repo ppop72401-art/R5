@@ -101,7 +101,11 @@ class _ServerDashboardState extends State<ServerDashboard> {
         
         File newFile = File('${_uploadDir.path}/$fileName');
         var sink = newFile.openWrite();
-        await request.pipe(sink);
+        
+        // ----------------------------------------------------
+        // الإصلاح هنا: استخدام addStream بدلاً من pipe
+        // ----------------------------------------------------
+        await sink.addStream(request);
         await sink.close();
         
         _updateFilesList();

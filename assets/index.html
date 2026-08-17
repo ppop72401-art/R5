@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastDrop - النقل الفوري</title>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        :root { --bg: #0f172a; --surface: #1e293b; --accent: #38bdf8; --text: #f8fafc; }
+        * { box-sizing: border-box; font-family: 'Tajawal', sans-serif; margin: 0; padding: 0; }
+        body { background-color: var(--bg); color: var(--text); padding: 20px; }
+        
+        .header { text-align: center; margin-bottom: 40px; margin-top: 20px; }
+        .header h1 { font-size: 3rem; color: var(--accent); margin-bottom: 10px; }
+        
+        .container { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; max-width: 1200px; margin: 0 auto; }
+        @media (max-width: 768px) { .container { grid-template-columns: 1fr; } }
+        
+        .panel { background: var(--surface); border-radius: 24px; padding: 30px; box-shadow: 0 15px 35px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.05); }
+        .panel h2 { margin-bottom: 20px; border-bottom: 2px solid rgba(255,255,255,0.1); padding-bottom: 15px; color: var(--accent); }
+        
+        .upload-area { border: 3px dashed rgba(56, 189, 248, 0.5); border-radius: 20px; padding: 60px 20px; text-align: center; cursor: pointer; transition: 0.3s; background: rgba(56, 189, 248, 0.05); display: block; }
+        .upload-area:hover { background: rgba(56, 189, 248, 0.1); transform: translateY(-5px); border-color: var(--accent); }
+        .upload-area input { display: none; }
+        .upload-area span { display: block; font-size: 1.8rem; font-weight: 900; color: var(--text); margin-bottom: 10px;}
+        
+        #progress-container { width: 100%; height: 12px; background: rgba(255,255,255,0.1); border-radius: 6px; margin-top: 20px; display: none; overflow: hidden; }
+        #progress-bar { height: 100%; width: 0%; background: var(--accent); transition: width 0.1s ease; }
+        
+        .file-list { display: flex; flex-direction: column; gap: 15px; max-height: 400px; overflow-y: auto; padding-left: 5px; }
+        .file-item { background: rgba(0,0,0,0.3); padding: 18px; border-radius: 16px; display: flex; justify-content: space-between; align-items: center; border: 1px solid rgba(255,255,255,0.05); transition: 0.2s; }
+        .file-item:hover { background: rgba(0,0,0,0.5); border-color: rgba(56, 189, 248, 0.3); }
+        .file-name { font-weight: bold; word-break: break-all; margin-left: 15px; font-size: 1.1rem; }
+        
+        .download-tools { display: flex; gap: 10px; align-items: center; }
+        select { padding: 10px 15px; border-radius: 12px; background: var(--bg); color: var(--text); border: 1px solid rgba(56, 189, 248, 0.5); outline: none; cursor: pointer; font-weight: bold; }
+        
+        .btn-download { background: var(--accent); color: var(--bg); text-decoration: none; padding: 10px 25px; border-radius: 12px; font-weight: 900; transition: 0.2s; box-shadow: 0 5px 15px rgba(56,189,248,0.3); }
+        .btn-download:hover { transform: scale(1.05); box-shadow: 0 8px 25px rgba(56,189,248,0.5); }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>FastDrop ⚡</h1>
+        <p style="font-size: 1.2rem; color: var(--text);">نظام نقل الملفات فائق السرعة عبر الشبكة المحلية</p>
+    </div>
+
+    <div class="container">
+        <!-- قسم الرفع -->
+        <div class="panel">
+            <h2>📤 رفع ملف جديد</h2>
+            <label class="upload-area" id="drop-zone">
+                <span>اضغط هنا لاختيار الملفات</span>
+                <p style="color: var(--text); opacity: 0.7;">أو قم بسحب وإفلات الملفات هنا (يدعم الأحجام العملاقة)</p>
+                <input type="file" id="file-input" multiple>
+            </label>
+            
+            <div id="progress-container">
+                <div id="progress-bar"></div>
+            </div>
+            <p id="upload-status" style="text-align: center; margin-top: 15px; font-weight: bold; font-size: 1.1rem;"></p>
+        </div>
+
+        <!-- قسم التنزيل -->
+        <div class="panel">
+            <h2>📥 الملفات المتاحة للتحميل</h2>
+            <div class="file-list" id="file-list">
+                <!-- جافاسكريبت ستقوم بتوليد الملفات هنا -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('file-input');
+        const fileList = document.getElementById('file-list');
+        const progressBar = document.getElementById('progress-bar');
+        const progressContainer = document.getElementById('progress-container');
+        const uploadStatus = document.getElementById('upload-status');
+
+        async function fetchFiles() {
+            try {
+                const response = await fetch('/api/files');
+                const files = await response.json();
+                
+                fileList.innerHTML = '';
+                if(files.length === 0) {
+                    fileList.innerHTML = '<p style="text-align:center; color:gray; padding: 20px;">لا توجد ملفات في النظام حالياً.</p>';
+                    return;
+                }
+
+                files.forEach(file => {
+                    const decodedName = decodeURIComponent(file);
+                    const item = document.createElement('div');
+                    item.className = 'file-item';
+                    
+                    item.innerHTML = `
+                        <div class="file-name">\${decodedName}</div>
+                        <div class="download-tools">
+                            <select title="جودة الملف">
+                                <option value="original">الدقة الأصلية 100%</option>
+                            </select>
+                            <a href="/api/download/\${encodeURIComponent(file)}" class="btn-download" download>تنزيل</a>
+                        </div>
+                    `;
+                    fileList.appendChild(item);
+                });
+            } catch (e) { console.error("Error:", e); }
+        }
+
+        fileInput.addEventListener('change', (e) => {
+            const files = e.target.files;
+            if(files.length === 0) return;
+            Array.from(files).forEach(file => uploadFile(file));
+            fileInput.value = ''; 
+        });
+
+        function uploadFile(file) {
+            progressContainer.style.display = 'block';
+            uploadStatus.innerText = `جاري نقل [\${file.name}] ...`;
+            uploadStatus.style.color = "var(--text)";
+            
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/upload', true);
+            xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+
+            xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable) {
+                    const percentComplete = (event.loaded / event.total) * 100;
+                    progressBar.style.width = percentComplete + '%';
+                }
+            };
+
+            xhr.onload = () => {
+                if (xhr.status === 200) {
+                    uploadStatus.innerText = '✔️ اكتمل الرفع بنجاح!';
+                    uploadStatus.style.color = "var(--accent)";
+                    setTimeout(() => { progressContainer.style.display = 'none'; progressBar.style.width = '0%'; uploadStatus.innerText = ''; }, 3000);
+                    fetchFiles();
+                } else {
+                    uploadStatus.innerText = '❌ فشل نقل الملف.';
+                    uploadStatus.style.color = 'red';
+                }
+            };
+            xhr.send(file);
+        }
+
+        setInterval(fetchFiles, 2000);
+        fetchFiles();
+    </script>
+</body>
+</html>

@@ -27,7 +27,7 @@ class _ServerDashboardState extends State<ServerDashboard> {
   String _localUrl = "جاري التهيئة...";
   String _networkUrl = "جاري التهيئة...";
   int _port = 8080;
-  List<String> _uploadedFiles = [];
+  int _filesCount = 0;
   late Directory _uploadDir;
 
   @override
@@ -38,10 +38,8 @@ class _ServerDashboardState extends State<ServerDashboard> {
 
   Future<void> _bootServer() async {
     try {
-      // تجهيز مجلد لحفظ الملفات بشكل آمن
       _uploadDir = await Directory.systemTemp.createTemp('fastdrop_vault_');
       
-      // جلب عنوان الـ IP للشبكة المحلية (Wi-Fi)
       List<String> ips = [];
       for (var interface in await NetworkInterface.list()) {
         for (var addr in interface.addresses) {
@@ -56,7 +54,6 @@ class _ServerDashboardState extends State<ServerDashboard> {
         _networkUrl = ips.isNotEmpty ? "http://$networkIp:$_port" : "الرجاء الاتصال بالـ Wi-Fi";
       });
 
-      // إطلاق السيرفر
       _server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
       _listenToRequests();
       
@@ -73,10 +70,31 @@ class _ServerDashboardState extends State<ServerDashboard> {
     }
   }
 
+  // التعرف على الأنواع الحقيقية للملفات
+  ContentType _getContentType(String filename) {
+    String ext = filename.split('.').last.toLowerCase();
+    switch (ext) {
+      case 'mp4': return ContentType('video', 'mp4');
+      case 'mkv': return ContentType('video', 'x-matroska');
+      case 'mp3': return ContentType('audio', 'mpeg');
+      case 'jpg':
+      case 'jpeg': return ContentType('image', 'jpeg');
+      case 'png': return ContentType('image', 'png');
+      case 'gif': return ContentType('image', 'gif');
+      case 'pdf': return ContentType('application', 'pdf');
+      case 'apk': return ContentType('application', 'vnd.android.package-archive');
+      case 'zip': return ContentType('application', 'zip');
+      case 'rar': return ContentType('application', 'x-rar-compressed');
+      case '7z': return ContentType('application', 'x-7z-compressed');
+      case 'doc':
+      case 'docx': return ContentType('application', 'msword');
+      default: return ContentType('application', 'octet-stream'); // النوع الثنائي الافتراضي
+    }
+  }
+
   Future<void> _handleRequest(HttpRequest request) async {
     final response = request.response;
     
-    // حلول متقدمة للـ CORS والسماح بنقل البيانات
     response.headers.add('Access-Control-Allow-Origin', '*');
     response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     response.headers.add('Access-Control-Allow-Headers', 'Origin, Content-Type');
@@ -89,47 +107,65 @@ class _ServerDashboardState extends State<ServerDashboard> {
 
     try {
       if (request.uri.path == '/') {
-        // تحميل وعرض واجهة الـ HTML
         String htmlContent = await rootBundle.loadString('assets/index.html');
         response.headers.contentType = ContentType.html;
         response.write(htmlContent);
       } 
       else if (request.uri.path == '/api/upload' && request.method == 'POST') {
-        // قراءة اسم الملف وصيغته من الرابط مباشرة لضمان عدم ضياع الصيغة
-        String fileName = request.uri.queryParameters['name'] ?? 'unknown_file_${DateTime.now().millisecondsSinceEpoch}';
+        // queryParameters تقوم بفك التشفير تلقائياً، لا داعي لـ decodeComponent التي كانت تخرب الاسم
+        String fileName = request.uri.queryParameters['name'] ?? 'file_${DateTime.now().millisecondsSinceEpoch}';
         
         File newFile = File('${_uploadDir.path}/$fileName');
         var sink = newFile.openWrite(mode: FileMode.write);
         
-        // حفظ الملف كتيار بايتات نقي (Raw Binary Data) للحفاظ على جودته وصيغته الأصلية
-        await sink.addStream(request.cast<List<int>>());
+        // الطريقة الفعلية والحقيقية للنقل (Chunk-by-Chunk Byte Transfer)
+        // لا نستخدم cast أو addStream، بل نأخذ بايتات الشبكة ونكتبها مباشرة في القرص
+        await for (var chunk in request) {
+          sink.add(chunk);
+        }
+        
+        await sink.flush(); // التأكد من كتابة كل البايتات للقرص
         await sink.close();
         
-        _updateFilesList();
+        _updateFilesCount();
         
         response.statusCode = HttpStatus.ok;
+        response.headers.contentType = ContentType.json;
         response.write(jsonEncode({"status": "success"}));
       } 
       else if (request.uri.path == '/api/files' && request.method == 'GET') {
-        // إرسال قائمة الملفات المتاحة
-        _updateFilesList();
+        List<Map<String, dynamic>> fileData = [];
+        if (_uploadDir.existsSync()) {
+          for (var entity in _uploadDir.listSync()) {
+            if (entity is File) {
+              fileData.add({
+                "name": entity.uri.pathSegments.last,
+                "size": await entity.length(),
+              });
+            }
+          }
+        }
         response.headers.contentType = ContentType.json;
-        response.write(jsonEncode(_uploadedFiles));
+        response.write(jsonEncode(fileData));
       } 
-      else if (request.uri.path.startsWith('/api/download/')) {
-        // تحميل الملف بالصيغة الثنائية (Binary) ليقرأه النظام كملف حقيقي
-        String fileName = Uri.decodeComponent(request.uri.pathSegments.last);
+      else if (request.uri.path == '/api/download') {
+        String fileName = request.uri.queryParameters['file'] ?? '';
         File file = File('${_uploadDir.path}/$fileName');
         
         if (await file.exists()) {
-          response.headers.contentType = ContentType('application', 'octet-stream');
-          // ترميز اسم الملف ليدعم اللغة العربية والمسافات
-          response.headers.add('Content-Disposition', 'attachment; filename="${Uri.encodeComponent(fileName)}"');
-          response.contentLength = await file.length();
+          int fileSize = await file.length();
+          String encodedName = Uri.encodeComponent(fileName);
           
-          await response.addStream(file.openRead().cast<List<int>>());
+          response.headers.contentType = _getContentType(fileName);
+          response.headers.set('Content-Disposition', 'attachment; filename*=UTF-8\'\'$encodedName');
+          response.headers.set('Content-Length', fileSize.toString());
+          
+          // البث المباشر للملف من القرص إلى الشبكة كـ Chunks
+          await for (var chunk in file.openRead()) {
+            response.add(chunk);
+          }
           await response.close();
-          return; 
+          return;
         } else {
           response.statusCode = HttpStatus.notFound;
         }
@@ -143,11 +179,10 @@ class _ServerDashboardState extends State<ServerDashboard> {
     await response.close();
   }
 
-  void _updateFilesList() {
+  void _updateFilesCount() {
     if (_uploadDir.existsSync()) {
-      final List<FileSystemEntity> entities = _uploadDir.listSync();
       setState(() {
-        _uploadedFiles = entities.whereType<File>().map((f) => f.uri.pathSegments.last).toList();
+        _filesCount = _uploadDir.listSync().whereType<File>().length;
       });
     }
   }
@@ -158,37 +193,37 @@ class _ServerDashboardState extends State<ServerDashboard> {
       backgroundColor: const Color(0xFF0F172A),
       body: Center(
         child: Container(
-          width: 600,
-          padding: const EdgeInsets.all(40),
+          width: 550,
+          padding: const EdgeInsets.all(35),
           decoration: BoxDecoration(
             color: const Color(0xFF1E293B),
-            borderRadius: BorderRadius.circular(30),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 30)],
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 25)],
             border: Border.all(color: const Color(0xFF38BDF8), width: 2),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.rocket_launch, size: 80, color: Color(0xFF38BDF8)),
-              const SizedBox(height: 20),
-              const Text('خادم النقل يعمل بنجاح 🟢', style: TextStyle(fontSize: 24, color: Colors.white, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 30),
-              
-              const Text('رابط هذا الجهاز (للمضيف):', style: TextStyle(color: Colors.grey, fontSize: 16)),
-              const SizedBox(height: 5),
-              SelectableText(_localUrl, style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.bold)),
-              
+              const Icon(Icons.bolt, size: 75, color: Color(0xFF38BDF8)),
+              const SizedBox(height: 15),
+              const Text('سيرفر FastDrop يعمل الآن', style: TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.bold)),
               const SizedBox(height: 25),
               
-              const Text('رابط الشبكة (للأجهزة الأخرى):', style: TextStyle(color: Colors.grey, fontSize: 16)),
-              const SizedBox(height: 5),
-              SelectableText(_networkUrl, style: const TextStyle(fontSize: 26, color: Color(0xFF38BDF8), fontWeight: FontWeight.bold)),
+              const Text('رابط هذا الجهاز:', style: TextStyle(color: Colors.grey, fontSize: 15)),
+              const SizedBox(height: 4),
+              SelectableText(_localUrl, style: const TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold)),
               
-              const SizedBox(height: 30),
+              const SizedBox(height: 20),
+              
+              const Text('رابط الأجهزة الأخرى:', style: TextStyle(color: Colors.grey, fontSize: 15)),
+              const SizedBox(height: 4),
+              SelectableText(_networkUrl, style: const TextStyle(fontSize: 24, color: Color(0xFF38BDF8), fontWeight: FontWeight.bold)),
+              
+              const SizedBox(height: 25),
               Container(
-                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 20),
-                decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(15)),
-                child: Text('الملفات في الخادم: ${_uploadedFiles.length}', style: const TextStyle(color: Colors.white70, fontSize: 18)),
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 18),
+                decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(12)),
+                child: Text('الملفات المستضافة: $_filesCount', style: const TextStyle(color: Colors.white70, fontSize: 16)),
               )
             ],
           ),
